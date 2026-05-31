@@ -28,7 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             # Add all nodes here 
-            # 'path_find_node = acid_techno.path_find_node:main',
+            'path_find_node = acid_techno.path_find_node:main',
             'read_acidity_node = acid_techno.read_acidity_node:main'
         ],
     },

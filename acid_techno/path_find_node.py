@@ -1,118 +1,127 @@
-#!/usr/bin/env python3
- 
-import math
-from typing import List
- 
 import rclpy
 from rclpy.node import Node
- 
-from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import TwistStamped
- 
- 
+from rclpy.action.client import ActionClient
+from nav2_msgs.action import NavigateToPose
+from . import grid_model
+
+from nav_msgs.msg import Odometry
+from std_msgs.msg import Float64
+from action_msgs.msg import GoalStatus
+
+GRID_SIZE_X = 5.0
+GRID_SIZE_Y = 5.0
+
 class PathFindNode(Node):
+    grid: grid_model.MapModel
+    latest_ph: float
+
+    latest_x: float
+    latest_y: float
+    latest_w: float
+
+    current_goal: tuple[float, float]
+    goal_active: bool
+    odom_published: bool
+
     def __init__(self):
         super().__init__('path_find_node')
- 
-        self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('input_cmd_topic', '/cmd_vel_raw')
-        self.declare_parameter('output_cmd_topic', '/cmd_vel')
-        self.declare_parameter('stop_distance', 0.35)
-        self.declare_parameter('front_angle_deg', 30.0)
+        self.get_logger().info('Constructing Path finding node')
 
-        self.scan_topic = self.get_parameter('scan_topic').get_parameter_value().string_value
-        self.input_cmd_topic = self.get_parameter('input_cmd_topic').get_parameter_value().string_value
-        self.output_cmd_topic = self.get_parameter('output_cmd_topic').get_parameter_value().string_value
-        self.stop_distance = self.get_parameter('stop_distance').get_parameter_value().double_value
-        self.front_angle_deg = self.get_parameter('front_angle_deg').get_parameter_value().double_value
- 
-        self.wall_detected = False
-        self.latest_min_front_distance = float('inf')
- 
-        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        self.grid = grid_model.MapModel(5, 5)
+        self.goal_active = False
+        self.latest_ph = 0
+        self.odom_published = False
 
-        qos_profile = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT
-        )
-
-        self.scan_sub = self.create_subscription(
-            LaserScan,
-            self.scan_topic,
-            self.scan_callback,
-            qos_profile
-        )
- 
-        self.cmd_sub = self.create_subscription(
-            TwistStamped,
-            self.input_cmd_topic,
-            self.cmd_callback,
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            '/odom',
+            self.odom_callback,
             10
         )
- 
-        self.cmd_pub = self.create_publisher(
-            TwistStamped,
-            self.output_cmd_topic,
+
+        self.ph_sub = self.create_subscription(
+            Float64,
+            '/acidity',
+            self.ph_callback,
             10
         )
- 
-        self.get_logger().info('Path finding node started')
- 
-    def scan_callback(self, msg: LaserScan):
-        front_distances = self.get_front_arc_distances(msg, self.front_angle_deg)
- 
-        valid_ranges = [
-            r for r in front_distances
-            if math.isfinite(r) and msg.range_min < r < msg.range_max
-        ]
- 
-        if valid_ranges:
-            self.latest_min_front_distance = min(valid_ranges)
-            self.wall_detected = self.latest_min_front_distance < self.stop_distance
-        else:
-            self.latest_min_front_distance = float('inf')
-            self.wall_detected = False
- 
-    def cmd_callback(self, msg: TwistStamped):
-        safe_cmd = TwistStamped()
-        safe_cmd.header = msg.header
- 
-        forward_requested = msg.twist.linear.x > 0.0
- 
-        if self.wall_detected and forward_requested:
-            safe_cmd.twist.linear.x = 0.0
-            safe_cmd.twist.linear.y = 0.0
-            safe_cmd.twist.linear.z = 0.0
-            safe_cmd.twist.angular.x = 0.0
-            safe_cmd.twist.angular.y = 0.0
-            safe_cmd.twist.angular.z = msg.twist.angular.z
- 
-            self.get_logger().warn(
-                f'Wall detected at {self.latest_min_front_distance:.2f} m. Blocking forward motion.'
-            )
-        else:
-            safe_cmd = msg
- 
-        self.cmd_pub.publish(safe_cmd)
- 
-    def get_front_arc_distances(self, scan_msg: LaserScan, front_angle_deg: float) -> List[float]:
-        ranges = scan_msg.ranges
-        angle_min = scan_msg.angle_min
-        angle_increment = scan_msg.angle_increment
- 
-        front_angle_rad = math.radians(front_angle_deg)
-        selected = []
- 
-        for i, distance in enumerate(ranges):
-            angle = angle_min + i * angle_increment
-            angle = math.atan2(math.sin(angle), math.cos(angle))
- 
-            if -front_angle_rad <= angle <= front_angle_rad:
-                selected.append(distance)
- 
-        return selected
- 
- 
+
+        self.client = ActionClient(
+            self,
+            NavigateToPose,
+            'navigate_to_pose'
+        )
+        self.get_logger().info('Initialized action client (Path finding node)')
+
+        self.client.wait_for_server()
+        self.get_logger().info('Path finding node operational')
+
+    def ph_callback(self, ph: Float64):
+        self.latest_ph = ph.data
+
+    def odom_callback(self, msg:Odometry):
+        self.odom_published = True
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        self.latest_x = x
+        self.latest_y = y
+        self.latest_w = msg.pose.pose.orientation.w
+
+        if not self.grid.location_measured(x, y):
+            self.get_logger().info(f"Taken measurement at {x}, {y} of ph: {self.latest_ph}")
+            self.grid.set_sample(x, y, self.latest_ph)
+
+        self.send_goal()
+
+    def send_goal(self):
+        if not self.odom_published:
+            return
+        goal_msg = NavigateToPose.Goal()
+
+        goal_msg.pose.header.frame_id = 'map'
+        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+
+        self.current_goal = self.grid.get_closest_sample_location(self.latest_x, self.latest_y)
+
+        goal_msg.pose.pose.position.x = float(self.current_goal[0])
+        goal_msg.pose.pose.position.y = float(self.current_goal[1])
+        goal_msg.pose.pose.position.z = 0.0
+        goal_msg.pose.pose.orientation.w = float(self.latest_w)
+
+        if not self.goal_active:
+            self.goal_active = True
+            future = self.client.send_goal_async(goal_msg)
+            self.get_logger().info('Sending goal...')
+            future.add_done_callback(self.goal_response_callback)
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal rejected')
+            self.goal_active = False
+            return
+        self.get_logger().info(f'Goal accepted, navigating to location [{self.current_goal[0]}] [{self.current_goal[1]}]')
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        goal_handle= future.result()
+        status = goal_handle.status
+
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info('Navigation complete')
+            if not self.grid.location_measured(self.latest_x, self.latest_y):
+                self.grid.mark_location_unreachable(self.latest_x, self.latest_y)
+
+
+        elif status == GoalStatus.STATUS_ABORTED:
+            self.get_logger().warn(f"Could not reach: x: {self.current_goal[0]}, y: {self.current_goal[1]}")
+            self.grid.mark_location_unreachable(self.current_goal[0], self.current_goal[1])
+
+        self.goal_active = False
+        self.send_goal()
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = PathFindNode()
@@ -123,7 +132,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
- 
- 
+
 if __name__ == '__main__':
     main()
