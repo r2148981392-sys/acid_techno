@@ -28,7 +28,7 @@ class ReadAcidityNode(Node):
             10
         )
 
-        self.pub = self.create_publisher(Float64, 'acidity', 20)
+        self.pub = self.create_publisher(Float64, '/acidity', 20)
 
         self.acidity_map = mpimg.imread(ACIDITY_MAP_PATH)
         self.map_height, self.map_width, _ = self.acidity_map.shape
