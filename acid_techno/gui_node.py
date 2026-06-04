@@ -15,6 +15,9 @@ from matplotlib.figure import Figure
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QGroupBox
+from PySide6.QtWidgets import QHBoxLayout
+from PySide6.QtWidgets import QGridLayout
 from PySide6.QtWidgets import QLabel
 from PySide6.QtWidgets import QMainWindow
 from PySide6.QtWidgets import QSizePolicy
@@ -161,12 +164,6 @@ class MappingWindow(QMainWindow):
         super().__init__()
         self.node = node
         self.acidity_colorbar = None
-        self.scan_status_text = 'waiting'
-        self.current_ph_text = 'waiting'
-        self.robot_x_text = 'waiting'
-        self.robot_y_text = 'waiting'
-        self.measured_cells_text = '0'
-        self.acidity_status_text = 'waiting for more samples'
 
         self.setWindowTitle('Acid Techno Mapping GUI')
 
@@ -174,18 +171,48 @@ class MappingWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(10, 10, 10, 10)
-        root_layout.setSpacing(8)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setSpacing(12)
 
-        status_container = QWidget()
-        status_layout = QHBoxLayout(status_container)
-        status_layout.setContentsMargins(8, 6, 8, 6)
-        status_layout.setSpacing(0)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(12)
 
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        status_layout.addWidget(self.status_label)
-        root_layout.addWidget(status_container)
+        sensor_box = QGroupBox('Sensor status')
+        sensor_layout = QGridLayout(sensor_box)
+        sensor_layout.setContentsMargins(12, 10, 12, 10)
+        sensor_layout.setHorizontalSpacing(10)
+        sensor_layout.setVerticalSpacing(6)
+        self.ph_label = QLabel('Current pH: waiting for data')
+        self.acidity_status_label = QLabel('Acidity status: waiting for grid state')
+        sensor_layout.addWidget(self.ph_label, 0, 0)
+        sensor_layout.addWidget(self.acidity_status_label, 1, 0)
+
+        robot_box = QGroupBox('Robot status')
+        robot_layout = QGridLayout(robot_box)
+        robot_layout.setContentsMargins(12, 10, 12, 10)
+        robot_layout.setHorizontalSpacing(10)
+        robot_layout.setVerticalSpacing(6)
+        self.x_label = QLabel('Robot x: waiting for data')
+        self.y_label = QLabel('Robot y: waiting for data')
+        self.scan_label = QLabel('Scan status: waiting for data')
+        robot_layout.addWidget(self.x_label, 0, 0)
+        robot_layout.addWidget(self.y_label, 1, 0)
+        robot_layout.addWidget(self.scan_label, 2, 0)
+
+        grid_box = QGroupBox('Grid status')
+        grid_layout = QGridLayout(grid_box)
+        grid_layout.setContentsMargins(12, 10, 12, 10)
+        grid_layout.setHorizontalSpacing(10)
+        grid_layout.setVerticalSpacing(6)
+        self.measured_label = QLabel('Measured cells: 0')
+        self.grid_status_label = QLabel('Grid status: waiting for grid state')
+        grid_layout.addWidget(self.measured_label, 0, 0)
+        grid_layout.addWidget(self.grid_status_label, 1, 0)
+
+        status_row.addWidget(sensor_box)
+        status_row.addWidget(robot_box)
+        status_row.addWidget(grid_box)
+        root_layout.addLayout(status_row)
 
         self.figure = Figure(figsize=(12, 6), constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
@@ -199,46 +226,40 @@ class MappingWindow(QMainWindow):
         self.timer.timeout.connect(self.poll_ros)
         self.timer.start(50)
 
+        self.refresh_labels()
         self.redraw()
-        self.update_status_label()
 
     def poll_ros(self):
         rclpy.spin_once(self.node, timeout_sec=0.0)
+        self.refresh_labels()
         self.redraw()
-        self.update_status_label()
 
-    def update_status_label(self):
+    def refresh_labels(self):
         if self.node.latest_ph is None:
-            self.current_ph_text = 'waiting'
+            self.ph_label.setText('Current pH: waiting for data')
         else:
-            self.current_ph_text = f'{self.node.latest_ph:.2f}'
+            self.ph_label.setText(f'Current pH: {self.node.latest_ph:.2f}')
 
         if self.node.latest_x is None:
-            self.robot_x_text = 'waiting'
+            self.x_label.setText('Robot x: waiting for data')
         else:
-            self.robot_x_text = f'{self.node.latest_x:.2f} m'
+            self.x_label.setText(f'Robot x: {self.node.latest_x:.2f} m')
 
         if self.node.latest_y is None:
-            self.robot_y_text = 'waiting'
+            self.y_label.setText('Robot y: waiting for data')
         else:
-            self.robot_y_text = f'{self.node.latest_y:.2f} m'
+            self.y_label.setText(f'Robot y: {self.node.latest_y:.2f} m')
 
         if self.node.grid_state is None:
-            self.measured_cells_text = '0'
-            self.scan_status_text = 'waiting'
-            self.acidity_status_text = 'waiting for more samples'
-        else:
-            measured_count = int(np.sum((self.node.grid_state.values >= PH_MIN) & (self.node.grid_state.values <= PH_MAX)))
-            self.measured_cells_text = str(measured_count)
-            self.scan_status_text = self.node.grid_message.replace('Scan status: ', '')
+            self.measured_label.setText('Measured cells: 0')
+            self.scan_label.setText('Scan status: waiting for data')
+            self.acidity_status_label.setText('Acidity map status: waiting for grid state')
+            self.grid_status_label.setText('Grid map status: waiting for grid state')
+            return
 
-        self.status_label.setText(
-            f'Status: {self.scan_status_text} | '
-            f'pH: {self.current_ph_text} | '
-            f'Robot: x={self.robot_x_text}, y={self.robot_y_text} | '
-            f'Measured cells: {self.measured_cells_text} | '
-            f'Acidity: {self.acidity_status_text}'
-        )
+        measured_count = int(np.sum((self.node.grid_state.values >= PH_MIN) & (self.node.grid_state.values <= PH_MAX)))
+        self.measured_label.setText(f'Measured cells: {measured_count}')
+        self.scan_label.setText(self.node.grid_message)
 
     def redraw(self):
         if self.acidity_colorbar is not None:
@@ -273,7 +294,8 @@ class MappingWindow(QMainWindow):
     def draw_acidity_map(self, axis):
         assert self.node.grid_state is not None
         acidity_data, extent, message = generate_acidity_map_from_grid(self.node.grid_state)
-        self.acidity_status_text = message.replace('Waiting for more samples for interpolation', 'waiting for more samples')
+
+        self.acidity_status_label.setText(f'Acidity map status: {message}')
 
         image = axis.imshow(
             acidity_data,
@@ -318,7 +340,7 @@ class MappingWindow(QMainWindow):
                     measured_values[row, col] = value
                     measured_count += 1
 
-        self.measured_cells_text = str(measured_count)
+            self.grid_status_label.setText(f'Grid map status: measured cells {measured_count}')
 
         ph_image = axis.imshow(
             measured_values,
