@@ -67,7 +67,10 @@ class PathFindNode(Node):
 
         self.publish_grid_state()
 
-        self.client.wait_for_server()
+        if not self.client.wait_for_server(timeout_sec=2.0):
+            self.get_logger().warn('NavigateToPose action server not available yet. Grid state will still be published.')
+        else:
+            self.get_logger().info('NavigateToPose action server available.')
         self.get_logger().info('Path finding node operational')
 
     def ph_callback(self, ph: Float64):
