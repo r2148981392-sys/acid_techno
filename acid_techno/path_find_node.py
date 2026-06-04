@@ -56,6 +56,7 @@ class PathFindNode(Node):
             '/grid_state',
             10
         )
+        self.grid_publish_timer = self.create_timer(1.0, self.publish_grid_state)
 
         self.client = ActionClient(
             self,
