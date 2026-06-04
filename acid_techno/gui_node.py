@@ -184,6 +184,13 @@ class MappingWindow(QMainWindow):
         header_layout.addWidget(self.scan_label, 2, 0, 1, 2)
         root_layout.addLayout(header_layout)
 
+        status_layout = QGridLayout()
+        self.acidity_status_label = QLabel('Acidity status: waiting for grid state')
+        self.grid_status_label = QLabel('Grid status: waiting for grid state')
+        status_layout.addWidget(self.acidity_status_label, 0, 0)
+        status_layout.addWidget(self.grid_status_label, 0, 1)
+        root_layout.addLayout(status_layout)
+
         self.figure = Figure(figsize=(12, 6), constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -223,6 +230,8 @@ class MappingWindow(QMainWindow):
         if self.node.grid_state is None:
             self.measured_label.setText('Measured grid squares: 0')
             self.scan_label.setText('Scan status: waiting for data')
+            self.acidity_status_label.setText('Acidity status: waiting for grid state')
+            self.grid_status_label.setText('Grid status: waiting for grid state')
             return
 
         measured_count = int(np.sum((self.node.grid_state.values >= PH_MIN) & (self.node.grid_state.values <= PH_MAX)))
@@ -263,11 +272,13 @@ class MappingWindow(QMainWindow):
         assert self.node.grid_state is not None
         acidity_data, extent, message = generate_acidity_map_from_grid(self.node.grid_state)
 
+        self.acidity_status_label.setText(f'Acidity status: {message}')
+
         image = axis.imshow(
             acidity_data,
             extent=extent,
             origin='lower',
-            cmap='viridis',
+            cmap='gray',
             vmin=PH_MIN,
             vmax=PH_MAX,
             aspect='equal',
@@ -281,7 +292,6 @@ class MappingWindow(QMainWindow):
         axis.set_yticks(np.arange(extent[2], extent[3] + CELL_SIZE, CELL_SIZE), minor=True)
         axis.grid(which='minor', color='white', linestyle='-', linewidth=0.4, alpha=0.25)
         axis.grid(which='major', visible=False)
-        axis.text(0.5, 1.02, message, transform=axis.transAxes, ha='center', va='bottom')
         self.acidity_colorbar = self.figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
         self.acidity_colorbar.set_label('pH')
 
@@ -306,6 +316,8 @@ class MappingWindow(QMainWindow):
                 elif PH_MIN <= value <= PH_MAX:
                     measured_values[row, col] = value
                     measured_count += 1
+
+        self.grid_status_label.setText(f'Grid status: Measured cells: {measured_count}')
 
         ph_image = axis.imshow(
             measured_values,
@@ -340,7 +352,6 @@ class MappingWindow(QMainWindow):
         axis.set_yticks(np.arange(extent[2], extent[3] + CELL_SIZE, CELL_SIZE), minor=True)
         axis.grid(which='minor', color='black', linestyle='-', linewidth=0.45, alpha=0.25)
         axis.grid(which='major', visible=False)
-        axis.text(0.5, 1.02, f'Measured cells: {measured_count}', transform=axis.transAxes, ha='center', va='bottom')
 
         if self.node.latest_x is not None and self.node.latest_y is not None:
             axis.scatter([self.node.latest_x], [self.node.latest_y], c='white', s=55, marker='x', linewidths=1.6)
