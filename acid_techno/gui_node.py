@@ -9,20 +9,24 @@ from scipy.interpolate import griddata
 from std_msgs.msg import Float64
 from std_msgs.msg import Float64MultiArray
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+# Switch to the Qt5-compatible Matplotlib backend
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
-from PySide6.QtWidgets import QGroupBox
-from PySide6.QtWidgets import QHBoxLayout
-from PySide6.QtWidgets import QGridLayout
-from PySide6.QtWidgets import QLabel
-from PySide6.QtWidgets import QMainWindow
-from PySide6.QtWidgets import QSizePolicy
-from PySide6.QtWidgets import QVBoxLayout
-from PySide6.QtWidgets import QWidget
+# Migrate from PySide6 to PyQt5
+from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QHBoxLayout,
+    QGridLayout,
+    QLabel,
+    QMainWindow,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget
+)
 
 
 GRID_SIZE_X = 3.0
@@ -216,7 +220,9 @@ class MappingWindow(QMainWindow):
 
         self.figure = Figure(figsize=(12, 6), constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        # Fixed size policy syntax for PyQt5 compatibility
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root_layout.addWidget(self.canvas)
 
         self.acidity_ax = self.figure.add_subplot(1, 2, 1)
@@ -384,7 +390,8 @@ def main(args=None):
     window.show()
 
     try:
-        exit_code = app.exec()
+        # Changed to app.exec_() for explicit Qt5 compatibility
+        exit_code = app.exec_()
     finally:
         node.destroy_node()
         rclpy.shutdown()
