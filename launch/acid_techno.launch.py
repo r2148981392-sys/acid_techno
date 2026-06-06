@@ -5,6 +5,13 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='acid_techno',
+            executable='gui_node',
+            name='gui_node',
+            output='screen',
+            parameters=[]
+        ),
+        Node(
+            package='acid_techno',
             executable='read_acidity_node',
             name='read_acidity_node',
             output='screen',
