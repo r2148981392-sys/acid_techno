@@ -1,11 +1,17 @@
 import sys
 from dataclasses import dataclass
 
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Pose2D, PoseStamped
+from nav2_msgs.action import NavigateToPose
+from . import grid_model
+
 import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from scipy.interpolate import griddata
+from scipy.interpolate import RBFInterpolator
 from std_msgs.msg import Float64
 from std_msgs.msg import Float64MultiArray
 
@@ -27,7 +33,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget
 )
-
 
 GRID_SIZE_X = 3.0
 GRID_SIZE_Y = 3.0
@@ -95,59 +100,119 @@ def generate_acidity_map_from_grid(grid_state: GridStateSnapshot, resolution: in
 
     if sample_ph.size < 3:
         measured = np.full((grid_state.rows, grid_state.cols), np.nan, dtype=float)
+        has_any = False
         for row in range(grid_state.rows):
             for col in range(grid_state.cols):
                 ph_value = grid_state.values[row, col]
                 if PH_MIN <= ph_value <= PH_MAX:
                     measured[row, col] = ph_value
+                    has_any = True
+        if not has_any:
+            return measured, extent, 'Waiting for first sample'
         return measured, extent, 'Waiting for more samples for interpolation'
 
     grid_x, grid_y = np.mgrid[
         extent[0]:extent[1]:complex(resolution),
         extent[2]:extent[3]:complex(resolution),
     ]
-    interpolated = griddata(
-        (sample_x, sample_y),
+    query_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+    sample_points = np.column_stack([sample_x, sample_y])
+
+    rbf = RBFInterpolator(
+        sample_points,
         sample_ph,
-        (grid_x, grid_y),
-        method='linear',
+        kernel='thin_plate_spline',
+        smoothing=0.1,
     )
-
-    if interpolated is None:
-        return np.full((grid_state.rows, grid_state.cols), np.nan, dtype=float), extent, 'Waiting for more samples for interpolation'
-
-    if np.isnan(interpolated).any():
-        nearest = griddata(
-            (sample_x, sample_y),
-            sample_ph,
-            (grid_x, grid_y),
-            method='nearest',
-        )
-        interpolated = np.where(np.isnan(interpolated), nearest, interpolated)
+    interpolated = np.clip(rbf(query_points).reshape(grid_x.shape), PH_MIN, PH_MAX)
 
     return interpolated.T, extent, 'Interpolated acidity map'
 
-
 class GuiNode(Node):
+    map: grid_model.MapModel
+
     def __init__(self):
         super().__init__('gui_node')
 
         self.latest_ph: float | None = None
         self.latest_x: float | None = None
         self.latest_y: float | None = None
+        self.latest_w: float | None = None
+        self.current_goal: tuple[float, float] = (0, 0)
         self.grid_state: GridStateSnapshot | None = None
+        self.nav_state: GridStateSnapshot | None = None  # ✅ separate nav snapshot
+        self.first_goal_sent = False
+
         self.grid_message: str = 'Waiting for data...'
+        self.map: grid_model.MapModel = grid_model.MapModel(GRID_SIZE_X, GRID_SIZE_Y)
 
         self.create_subscription(Float64, '/acidity', self.acidity_callback, 10)
-        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        #self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.sub = self.create_subscription(
+            Pose2D,
+            '/corrected_odom',
+            self.odom_callback,
+            10
+        )
         self.create_subscription(Float64MultiArray, '/grid_state', self.grid_state_callback, 10)
+        self.create_subscription(Float64MultiArray, '/nav_state', self.nav_state_callback, 10)  # ✅ new
+        self.goal_sub = self.create_subscription(GoalStatus, '/goal_pub', self.goal_status_callback, 10)
+
+        self.goal_loc_pub = self.create_publisher(PoseStamped, '/goal_location', 10)
+        self.grid_state_pub = self.create_publisher(Float64MultiArray, '/grid_state', 10)
+        self.nav_state_pub = self.create_publisher(Float64MultiArray, '/nav_state', 10)  # ✅ new
+        self.send_goal()
+
+    def send_goal(self):
+        if self.latest_x is None or self.latest_y is None or self.latest_w is None:
+            return
+
+        self.current_goal = self.map.get_closest_sample_location(self.latest_x, self.latest_y)
+
+        pose_msg = PoseStamped()
+        pose_msg.header.frame_id = 'map'
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_msg.pose.position.x = float(self.current_goal[0])
+        pose_msg.pose.position.y = float(self.current_goal[1])
+        pose_msg.pose.orientation.w = float(self.latest_w)
+
+        self.goal_loc_pub.publish(pose_msg)
+
+    def goal_status_callback(self, message: GoalStatus):
+        # Goal rejected, retry
+        if message.status == GoalStatus.STATUS_CANCELED:
+            self.send_goal()
+            return
+
+        # Goal either successful or unsuccessful, depending on answer edit the map
+        if message.status == GoalStatus.STATUS_SUCCEEDED:
+            self.map.set_reached(self.current_goal[0], self.current_goal[1])
+        elif message.status == GoalStatus.STATUS_ABORTED:
+            self.map.mark_location_unreachable(self.current_goal[0], self.current_goal[1])
+
+        self.publish_grid_state()
+        self.send_goal()
 
     def acidity_callback(self, message: Float64):
-        self.latest_ph = float(message.data)
+        if self.latest_x is None or self.latest_y is None:
+            return
 
-    def odom_callback(self, message: Odometry):
-        self.latest_x = float(message.pose.pose.position.x)
-        self.latest_y = float(message.pose.pose.position.y)
+        self.latest_ph = float(message.data)
+        if not self.map.location_measured(self.latest_x, self.latest_y):
+            self.map.set_sample(self.latest_x, self.latest_y, self.latest_ph)
+            self.publish_grid_state()
+
+    def odom_callback(self, message: Pose2D):
+        # self.latest_x = float(message.pose.pose.position.x)
+        # self.latest_y = float(message.pose.pose.position.y)
+        # self.latest_w = float(message.pose.pose.orientation.w)
+        self.latest_x = float(message.x)
+        self.latest_y = float(message.y)
+        self.latest_w = float(message.theta)
+
+        if not self.first_goal_sent:
+            self.first_goal_sent = True
+            self.send_goal()
 
     def grid_state_callback(self, message: Float64MultiArray):
         snapshot = parse_grid_state(message)
@@ -161,6 +226,40 @@ class GuiNode(Node):
             self.grid_message = 'Scan status: complete'
         else:
             self.grid_message = 'Scan status: scanning'
+
+    def nav_state_callback(self, message: Float64MultiArray): 
+        snapshot = parse_grid_state(message)
+        if snapshot is None:
+            return
+        self.nav_state = snapshot
+
+    def publish_grid_state(self):
+        # --- Acidity grid (5cm cells) ---
+        acidity_msg = Float64MultiArray()
+        rows = len(self.map.acidity_grid)
+        cols = len(self.map.acidity_grid[0]) if rows > 0 else 0
+        data = [float(rows), float(cols)]
+        for row in self.map.acidity_grid:
+            for square in row:
+                data.append(float(square.ph_sample) if square.measured else -1.0)
+        acidity_msg.data = data
+        self.grid_state_pub.publish(acidity_msg)
+
+        # --- Nav grid (30cm cells) ---
+        nav_msg = Float64MultiArray()
+        nav_rows = len(self.map.nav_grid)
+        nav_cols = len(self.map.nav_grid[0]) if nav_rows > 0 else 0
+        nav_data = [float(nav_rows), float(nav_cols)]
+        for row in self.map.nav_grid:
+            for square in row:
+                if not square.accessible:
+                    nav_data.append(-2.0)   # unreachable
+                elif square.reached:
+                    nav_data.append(1.0)    # visited
+                else:
+                    nav_data.append(-1.0)   # unvisited
+        nav_msg.data = nav_data
+        self.nav_state_pub.publish(nav_msg)
 
 
 class MappingWindow(QMainWindow):
@@ -220,7 +319,7 @@ class MappingWindow(QMainWindow):
 
         self.figure = Figure(figsize=(12, 6), constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
-        
+
         # Fixed size policy syntax for PyQt5 compatibility
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root_layout.addWidget(self.canvas)
@@ -276,13 +375,15 @@ class MappingWindow(QMainWindow):
         self.grid_ax.clear()
 
         if self.node.grid_state is None:
-            self.draw_empty_panel(self.acidity_ax, 'Waiting for grid state')
-            self.draw_empty_panel(self.grid_ax, 'Waiting for grid state')
-            self.canvas.draw_idle()
-            return
+            self.draw_empty_panel(self.acidity_ax, 'Waiting for acidity data')
+        else:
+            self.draw_acidity_map(self.acidity_ax)
 
-        self.draw_acidity_map(self.acidity_ax)
-        self.draw_grid_map(self.grid_ax)
+        if self.node.nav_state is None:
+            self.draw_empty_panel(self.grid_ax, 'Waiting for nav data')
+        else:
+            self.draw_grid_map(self.grid_ax)
+
         self.canvas.draw_idle()
 
     def draw_empty_panel(self, axis, message: str):
@@ -328,29 +429,29 @@ class MappingWindow(QMainWindow):
             axis.scatter([self.node.latest_x], [self.node.latest_y], c='black', s=40, marker='o', edgecolors='white', linewidths=0.8)
 
     def draw_grid_map(self, axis):
-        assert self.node.grid_state is not None
+        assert self.node.nav_state is not None
 
-        extent = grid_extent(self.node.grid_state.rows, self.node.grid_state.cols)
-        status_values = np.zeros((self.node.grid_state.rows, self.node.grid_state.cols), dtype=float)
+        extent = grid_extent(self.node.nav_state.rows, self.node.nav_state.cols)
+        status_values = np.zeros((self.node.nav_state.rows, self.node.nav_state.cols), dtype=float)
 
-        measured_count = 0
-        for row in range(self.node.grid_state.rows):
-            for col in range(self.node.grid_state.cols):
-                value = self.node.grid_state.values[row, col]
+        visited_count = 0
+        for row in range(self.node.nav_state.rows):
+            for col in range(self.node.nav_state.cols):
+                value = self.node.nav_state.values[row, col]
                 if value == -2.0:
-                    status_values[row, col] = 2.0
-                elif value == -1.0:
-                    status_values[row, col] = 0.0
-                elif PH_MIN <= value <= PH_MAX:
-                    status_values[row, col] = 1.0
-                    measured_count += 1
+                    status_values[row, col] = 2.0   # unreachable
+                elif value == 1.0:
+                    status_values[row, col] = 1.0   # visited
+                    visited_count += 1
+                else:
+                    status_values[row, col] = 0.0   # unvisited
 
-        self.grid_status_label.setText(f'Grid map status: measured cells {measured_count}')
+        self.grid_status_label.setText(f'Grid map status: visited cells {visited_count}')
 
         status_cmap = ListedColormap([
-            (0.85, 0.85, 0.85, 1.0),  # unmeasured
-            (0.40, 0.40, 0.40, 1.0),  # measured
-            (0.0, 0.0, 0.0, 1.0),     # unreachable
+            (0.85, 0.85, 0.85, 1.0),  # unvisited
+            (0.40, 0.40, 0.40, 1.0),  # visited
+            (0.0,  0.0,  0.0,  1.0),  # unreachable
         ])
         axis.imshow(
             status_values,
@@ -362,7 +463,7 @@ class MappingWindow(QMainWindow):
             aspect='equal',
         )
 
-        axis.set_title('Grid square map')
+        axis.set_title('Nav grid map')
         axis.set_xlabel('X (m)')
         axis.set_ylabel('Y (m)')
         axis.set_xlim(extent[0], extent[1])

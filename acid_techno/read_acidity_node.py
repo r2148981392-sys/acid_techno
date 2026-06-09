@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from geometry_msgs.msg import Pose2D, PoseWithCovarianceStamped
 import rclpy
 from rclpy.node import Node
 
@@ -10,8 +11,8 @@ from std_msgs.msg import Float64
 
 # Some constants
 ACIDITY_MAP_PATH = '/ws/src/acid_techno/resource/AcidityMap.jpg'
-GRID_SIZE_X = 5.0
-GRID_SIZE_Y = 5.0
+GRID_SIZE_X = 6.0
+GRID_SIZE_Y = 6.0
 
 class ReadAcidityNode(Node):
     acidity_map: np.ndarray
@@ -21,9 +22,16 @@ class ReadAcidityNode(Node):
     def __init__(self):
         super().__init__('read_acidity_node')
  
+        # self.sub = self.create_subscription(
+        #     Odometry,
+        #     '/odom',
+        #     self.odom_callback,
+        #     10
+        # )
+
         self.sub = self.create_subscription(
-            Odometry,
-            '/odom',
+            Pose2D,
+            '/corrected_odom',
             self.odom_callback,
             10
         )
@@ -35,9 +43,9 @@ class ReadAcidityNode(Node):
 
         self.get_logger().info('Acidity sensor operational')
  
-    def odom_callback(self, msg: Odometry):
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
+    def odom_callback(self, msg: Pose2D):
+        x = msg.x
+        y = msg.y
 
         relative_x = x / (GRID_SIZE_X / 2) * (self.map_width / 2)
         relative_y = y / (GRID_SIZE_Y / 2) * (self.map_height / 2)

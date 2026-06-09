@@ -5,7 +5,7 @@ from nav2_msgs.action import NavigateToPose
 from . import grid_model
 
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64
+from std_msgs.msg import Bool, Float64
 from std_msgs.msg import Float64MultiArray
 from action_msgs.msg import GoalStatus
 
@@ -37,10 +37,17 @@ class PathFindNode(Node):
         self.odom_published = False
         self.scan_finished = False
 
-        self.odom_sub = self.create_subscription(
+        self.odom_sub = self.create_subscription (
             Odometry,
             '/odom',
             self.odom_callback,
+            10
+        )
+
+        self.goal_pub = self.create_subscription (
+            Bool,
+            '/goal_pub',
+            self.goal_callback,
             10
         )
 
@@ -158,7 +165,6 @@ class PathFindNode(Node):
             if not self.grid.location_measured(self.current_goal[0], self.current_goal[1]):
                 self.grid.mark_location_unreachable(self.current_goal[0], self.current_goal[1])
                 self.publish_grid_state()
-
 
         elif status == GoalStatus.STATUS_ABORTED:
             self.get_logger().warn(f"Could not reach: x: {self.current_goal[0]}, y: {self.current_goal[1]}")
