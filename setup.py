@@ -31,7 +31,8 @@ setup(
             'gui_node = acid_techno.gui_node:main',
             'navigation_node = acid_techno.navigation_node:main',
             'read_acidity_node = acid_techno.read_acidity_node:main',
-            'corrected_odom_node = acid_techno.corrected_odom_node:main'
+            'corrected_odom_node = acid_techno.corrected_odom_node:main',
+            'temperature_node = acid_techno.temperature_node:main',
         ],
     },
 )
