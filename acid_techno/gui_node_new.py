@@ -13,8 +13,8 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from scipy.interpolate import griddata
 from scipy.interpolate import RBFInterpolator
-from std_msgs.msg import Float64
 from std_msgs.msg import Bool
+from std_msgs.msg import Float64
 from std_msgs.msg import Float64MultiArray
 
 # Switch to the Qt5-compatible Matplotlib backend
@@ -38,7 +38,6 @@ from PyQt5.QtWidgets import (
 
 GRID_SIZE_X = 3.0
 GRID_SIZE_Y = 3.0
-CELL_SIZE = 0.3
 PH_MIN = 6.0
 PH_MAX = 9.0
 TEMPERATURE_GRAPH_Y_MIN = 0.0
@@ -53,14 +52,16 @@ class GridStateSnapshot:
 
 
 def grid_extent(rows: int, cols: int) -> tuple[float, float, float, float]:
-    half_x = cols * CELL_SIZE / 2.0
-    half_y = rows * CELL_SIZE / 2.0
+    half_x = GRID_SIZE_X / 2.0
+    half_y = GRID_SIZE_Y / 2.0
     return (-half_x, half_x, -half_y, half_y)
 
 
 def cell_center(row: int, col: int, rows: int, cols: int) -> tuple[float, float]:
-    x = (col + 0.5) * CELL_SIZE - (cols * CELL_SIZE) / 2.0
-    y = (row + 0.5) * CELL_SIZE - (rows * CELL_SIZE) / 2.0
+    cell_size_x = GRID_SIZE_X / cols
+    cell_size_y = GRID_SIZE_Y / rows
+    x = (col + 0.5) * cell_size_x - GRID_SIZE_X / 2.0
+    y = (row + 0.5) * cell_size_y - GRID_SIZE_Y / 2.0
     return x, y
 
 
@@ -328,7 +329,7 @@ class MappingWindow(QMainWindow):
         grid_layout.setContentsMargins(12, 10, 12, 10)
         grid_layout.setHorizontalSpacing(10)
         grid_layout.setVerticalSpacing(6)
-        self.measured_label = QLabel('Measured cells: 0')
+        self.measured_label = QLabel('Measured acidity cells: 0')
         self.grid_status_label = QLabel('Grid status: waiting for grid state')
         grid_layout.addWidget(self.measured_label, 0, 0)
         grid_layout.addWidget(self.grid_status_label, 1, 0)
@@ -399,13 +400,13 @@ class MappingWindow(QMainWindow):
             self.y_label.setText(f'Robot y: {self.node.latest_y:.2f} m')
 
         if self.node.grid_state is None:
-            self.measured_label.setText('Measured cells: 0')
+            self.measured_label.setText('Measured acidity cells: 0')
             self.scan_label.setText('Scan status: waiting for data')
             self.acidity_status_label.setText('Acidity map status: waiting for grid state')
             self.grid_status_label.setText('Grid map status: waiting for grid state')
         else:
             measured_count = int(np.sum((self.node.grid_state.values >= PH_MIN) & (self.node.grid_state.values <= PH_MAX)))
-            self.measured_label.setText(f'Measured cells: {measured_count}')
+            self.measured_label.setText(f'Measured acidity cells: {measured_count}')
             self.scan_label.setText(self.node.grid_message)
 
         if self.node.latest_temperature is None:
@@ -429,12 +430,16 @@ class MappingWindow(QMainWindow):
         self.temperature_ax.clear()
 
         if self.node.grid_state is None:
-            self.draw_empty_panel(self.acidity_ax, 'Waiting for acidity data')
+            acidity_rows = int(GRID_SIZE_Y / grid_model.AcidityGridSquare.DIMENSION)
+            acidity_cols = int(GRID_SIZE_X / grid_model.AcidityGridSquare.DIMENSION)
+            self.draw_empty_panel(self.acidity_ax, 'Waiting for acidity data', acidity_rows, acidity_cols)
         else:
             self.draw_acidity_map(self.acidity_ax)
 
         if self.node.nav_state is None:
-            self.draw_empty_panel(self.grid_ax, 'Waiting for nav data')
+            nav_rows = int(GRID_SIZE_Y / grid_model.NavGridSquare.DIMENSION)
+            nav_cols = int(GRID_SIZE_X / grid_model.NavGridSquare.DIMENSION)
+            self.draw_empty_panel(self.grid_ax, 'Waiting for nav data', nav_rows, nav_cols)
         else:
             self.draw_grid_map(self.grid_ax)
 
@@ -443,11 +448,13 @@ class MappingWindow(QMainWindow):
         self.canvas.draw_idle()
         self.temperature_canvas.draw_idle()
 
-    def draw_empty_panel(self, axis, message: str):
+    def draw_empty_panel(self, axis, message: str, rows: int, cols: int):
+        cell_width = GRID_SIZE_X / cols
+        cell_height = GRID_SIZE_Y / rows
         axis.set_xlim(-GRID_SIZE_X / 2.0, GRID_SIZE_X / 2.0)
         axis.set_ylim(-GRID_SIZE_Y / 2.0, GRID_SIZE_Y / 2.0)
-        axis.set_xticks(np.arange(-GRID_SIZE_X / 2.0, GRID_SIZE_X / 2.0 + CELL_SIZE, CELL_SIZE), minor=True)
-        axis.set_yticks(np.arange(-GRID_SIZE_Y / 2.0, GRID_SIZE_Y / 2.0 + CELL_SIZE, CELL_SIZE), minor=True)
+        axis.set_xticks(np.arange(-GRID_SIZE_X / 2.0, GRID_SIZE_X / 2.0 + cell_width, cell_width), minor=True)
+        axis.set_yticks(np.arange(-GRID_SIZE_Y / 2.0, GRID_SIZE_Y / 2.0 + cell_height, cell_height), minor=True)
         axis.grid(which='minor', color='0.85', linestyle='-', linewidth=0.8)
         axis.grid(which='major', visible=False)
         axis.text(0.5, 0.5, message, transform=axis.transAxes, ha='center', va='center')
@@ -475,8 +482,10 @@ class MappingWindow(QMainWindow):
         axis.set_ylabel('Y (m)')
         axis.set_xlim(extent[0], extent[1])
         axis.set_ylim(extent[2], extent[3])
-        axis.set_xticks(np.arange(extent[0], extent[1] + CELL_SIZE, CELL_SIZE), minor=True)
-        axis.set_yticks(np.arange(extent[2], extent[3] + CELL_SIZE, CELL_SIZE), minor=True)
+        cell_width = GRID_SIZE_X / self.node.grid_state.cols
+        cell_height = GRID_SIZE_Y / self.node.grid_state.rows
+        axis.set_xticks(np.arange(extent[0], extent[1] + cell_width, cell_width), minor=True)
+        axis.set_yticks(np.arange(extent[2], extent[3] + cell_height, cell_height), minor=True)
         axis.grid(which='minor', color='white', linestyle='-', linewidth=0.4, alpha=0.25)
         axis.grid(which='major', visible=False)
         self.acidity_colorbar = self.figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
@@ -506,9 +515,9 @@ class MappingWindow(QMainWindow):
         self.grid_status_label.setText(f'Grid map status: visited cells {visited_count}')
 
         status_cmap = ListedColormap([
-            (0.85, 0.85, 0.85, 1.0),  # unvisited
-            (0.40, 0.40, 0.40, 1.0),  # visited
-            (0.0,  0.0,  0.0,  1.0),  # unreachable
+            (0.88, 0.88, 0.88, 1.0),  # unmeasured
+            (0.35, 0.35, 0.35, 1.0),  # measured acidity cell
+            (0.05, 0.05, 0.05, 1.0),  # unreachable
         ])
         axis.imshow(
             status_values,
@@ -520,18 +529,20 @@ class MappingWindow(QMainWindow):
             aspect='equal',
         )
 
-        axis.set_title('Nav grid map')
+        axis.set_title('Grid square map')
         axis.set_xlabel('X (m)')
         axis.set_ylabel('Y (m)')
         axis.set_xlim(extent[0], extent[1])
         axis.set_ylim(extent[2], extent[3])
-        axis.set_xticks(np.arange(extent[0], extent[1] + CELL_SIZE, CELL_SIZE), minor=True)
-        axis.set_yticks(np.arange(extent[2], extent[3] + CELL_SIZE, CELL_SIZE), minor=True)
+        cell_width = GRID_SIZE_X / self.node.nav_state.cols
+        cell_height = GRID_SIZE_Y / self.node.nav_state.rows
+        axis.set_xticks(np.arange(extent[0], extent[1] + cell_width, cell_width), minor=True)
+        axis.set_yticks(np.arange(extent[2], extent[3] + cell_height, cell_height), minor=True)
         axis.grid(which='minor', color='black', linestyle='-', linewidth=0.45, alpha=0.25)
         axis.grid(which='major', visible=False)
 
         if self.node.latest_x is not None and self.node.latest_y is not None:
-            axis.scatter([self.node.latest_x], [self.node.latest_y], c='white', s=55, marker='x', linewidths=1.6)
+            axis.scatter([self.node.latest_x], [self.node.latest_y], c='white', s=70, marker='x', linewidths=1.9)
 
     def draw_temperature_graph(self, axis):
         axis.set_title('Temperature over time')
@@ -561,7 +572,7 @@ def main(args=None):
 
     app = QApplication(sys.argv)
     window = MappingWindow(node)
-    window.resize(1400, 800)
+    window.resize(1400, 1000)
     window.show()
 
     try:
