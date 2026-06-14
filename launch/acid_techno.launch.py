@@ -26,6 +26,13 @@ def generate_launch_description():
         ),
         Node(
             package='acid_techno',
+            executable='temperature_node',
+            name='temperature_node',
+            output='screen',
+            parameters=[{'use_sim_time': True}]
+        ),
+        Node(
+            package='acid_techno',
             executable='navigation_node',
             name='navigation_node',
             output='screen',
